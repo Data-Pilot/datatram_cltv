@@ -1,0 +1,21 @@
+# Shared by 01_ds_actuals, 02_ds_cltv, 03_ds_segmentation, 04_ds_predictions
+# and 05_ds_recommendations. Requires Python 3.10+ (02 uses `X | None` type hints).
+# Versions are pinned only where the notebooks rely on a minimum release.
+
+# Data
+pandas
+numpy
+scipy
+
+# Modelling
+scikit-learn>=1.0      # HistGradientBoostingRegressor without the experimental import (02)
+lightgbm>=3.3          # lgb.early_stopping callback (04)
+python-dateutil
+
+# Connections: Postgres (tenant list), ClickHouse (tenant data), Vault/OpenBao (credentials)
+psycopg2-binary
+clickhouse-connect
+hvac>=1.1              # read_secret_version(raise_on_deleted_version=...)
+python-dotenv
+requests>=2.31
+psutil>=5.9             # Per-run peak resident-memory metric

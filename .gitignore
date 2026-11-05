@@ -1,0 +1,7 @@
+﻿.env
+*.csv
+recommendation_downloads/
+.claude/
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
