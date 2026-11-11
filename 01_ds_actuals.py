@@ -24,7 +24,7 @@ except ImportError:  # Keep observability optional if deployment missed the depe
 
 
 DEFAULT_SERVICE_NAME = "cltv-pipeline"
-DEFAULT_ENVIRONMENT = "dev"
+DEFAULT_ENVIRONMENT = "unknown"  # only used if DEPLOY_ENV is missing from .env
 DEFAULT_TIMEOUT_SECONDS = 15
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.1
 
@@ -253,6 +253,19 @@ from hvac.exceptions import InvalidPath
 
 VALUE_KEY = "value"
 
+# Everything that differs between dev and prod comes from .env (see .env.example).
+def required_env(name):
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} must be set in .env or the job environment")
+    return value
+
+
+DEPLOY_ENV = required_env("DEPLOY_ENV")  # environment label on the metrics, e.g. dev / prod
+PG_SCHEMA = required_env("PG_SCHEMA")  # Postgres schema holding tenants, e.g. dev_datatram / prod_datatram
+if not PG_SCHEMA.isidentifier():
+    raise RuntimeError(f"PG_SCHEMA must be a plain schema name, got {PG_SCHEMA!r}")
+
 
 def secret_name(name):
     """Normalise a config key to its Vault path (underscores -> hyphens)."""
@@ -319,19 +332,19 @@ conn = psycopg2.connect(
 )
 
 # --- Query ---
-query = '''
+query = f'''
 SELECT
     t.tenant_id,
     t.tenant_name,
     REPLACE(t.tenant_name, ' ', '_') || '_' || t.tenant_id AS schema_name,
     t.created_at,
     tp.source_connection_status AS shopify_connection_status
-FROM "dev_datatram".tenants t
-LEFT JOIN "dev_datatram".tenant_properties tp
+FROM "{PG_SCHEMA}".tenants t
+LEFT JOIN "{PG_SCHEMA}".tenant_properties tp
     ON tp.tenant_id = t.tenant_id
    AND tp.source_id = (
         SELECT source_id
-        FROM "dev_datatram".data_sources
+        FROM "{PG_SCHEMA}".data_sources
         WHERE source_id = 1
    );
 '''
@@ -341,7 +354,7 @@ tenants = pd.read_sql_query(query, conn)
 conn.close()
 
 tenants = tenants[tenants['shopify_connection_status'] == 'connected'].copy()
-tenants = tenants['schema_name'].tolist()
+tenants = list(dict.fromkeys(tenants['schema_name'].tolist()))  # tenant_properties can hold duplicate rows (seen in prod)
 
 print(f"Found {len(tenants)} tenants with Shopify connection status 'connected'.")
 print(tenants)
