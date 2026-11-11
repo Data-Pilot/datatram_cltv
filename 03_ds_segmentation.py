@@ -822,29 +822,62 @@ def find_list(conn, schema, tenant_id, normalized_name):
     }
 
 
+MIN_PHONE_DIGITS = 7
+BLANK_VALUES = {"", "none", "null", "nan", "<na>"}
+
+
+def clean_text(value):
+    """Stripped string, or "" for None/NaN and placeholder text like 'None'."""
+    if value is None or (isinstance(value, float) and value != value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in BLANK_VALUES else text
+
+
+def clean_phone(value):
+    """The phone as stored, or "" if it has fewer than MIN_PHONE_DIGITS digits."""
+    phone = clean_text(value)
+    return phone if sum(ch.isdigit() for ch in phone) >= MIN_PHONE_DIGITS else ""
+
+
 def clean_contacts(frame):
+    """Contacts reachable by email OR phone; only rows with neither are dropped.
+
+    An invalid email is blanked rather than dropping the row, so a customer with
+    a bad email but a usable phone is still kept. De-duplicated by email when
+    there is one, otherwise by phone (digits only)."""
     seen = set()
     contacts = []
 
     for row in frame.to_dict("records"):
-        email = str(row.get(EMAIL) or "").strip().lower()
-
+        email = clean_text(row.get(EMAIL)).lower()
         if not EMAIL_RE.match(email):
+            email = ""
+        phone = clean_phone(row.get(PHONE))
+
+        if not email and not phone:
             continue
 
-        if email in seen:
+        key = ("email", email) if email else ("phone", "".join(ch for ch in phone if ch.isdigit()))
+        if key in seen:
             continue
-
-        seen.add(email)
+        seen.add(key)
 
         contacts.append({
             EMAIL: email,
-            FIRST_NAME: "" if row.get(FIRST_NAME) is None else str(row.get(FIRST_NAME)).strip(),
-            LAST_NAME: "" if row.get(LAST_NAME) is None else str(row.get(LAST_NAME)).strip(),
-            PHONE: "" if row.get(PHONE) is None else str(row.get(PHONE)).strip(),
+            FIRST_NAME: clean_text(row.get(FIRST_NAME)),
+            LAST_NAME: clean_text(row.get(LAST_NAME)),
+            PHONE: phone,
         })
 
     return contacts
+
+
+def contact_mix(contacts):
+    """'x email+phone, y email only, z phone only' for the run log."""
+    both = sum(1 for c in contacts if c[EMAIL] and c[PHONE])
+    email_only = sum(1 for c in contacts if c[EMAIL] and not c[PHONE])
+    return f"{both} email+phone, {email_only} email only, {len(contacts) - both - email_only} phone only"
 
 
 def to_csv_bytes(contacts, headers):
@@ -989,7 +1022,7 @@ def refresh_segment_lists_for_tenant(tenant_db):
             contacts = clean_contacts(members)
 
             if len(members) > 0 and not contacts:
-                print(f"{tenant_db}: {list_name} has members but no valid emails; keeping existing list")
+                print(f"{tenant_db}: {list_name} has members but no valid email or phone; keeping existing list")
                 continue
 
             if existing and existing["list_type"] != LIST_TYPE:
@@ -999,6 +1032,16 @@ def refresh_segment_lists_for_tenant(tenant_db):
             if existing and EMAIL not in existing["headers"]:
                 print(f"{tenant_db}: {list_name} has no email mapping; skipping")
                 continue
+
+            if existing and PHONE not in existing["headers"]:
+                # The list's CSV has no phone column, so phone-only contacts would be blank rows
+                phone_only = sum(1 for c in contacts if not c[EMAIL])
+                contacts = [c for c in contacts if c[EMAIL]]
+                if phone_only:
+                    print(f"{tenant_db}: {list_name} has no phone mapping; leaving out {phone_only} phone-only contacts")
+                if len(members) > 0 and not contacts:
+                    print(f"{tenant_db}: {list_name} has no valid emails and no phone mapping; keeping existing list")
+                    continue
 
             if not existing and not contacts:
                 print(f"{tenant_db}: {list_name} is empty and does not exist yet; skipping create")
@@ -1017,7 +1060,7 @@ def refresh_segment_lists_for_tenant(tenant_db):
                     file_bytes=csv_bytes,
                 )
 
-                print(f"{tenant_db}: refreshed {list_name} with {len(contacts)} contacts")
+                print(f"{tenant_db}: refreshed {list_name} with {len(contacts)} contacts ({contact_mix(contacts)})")
 
             else:
                 create_list(
@@ -1031,7 +1074,7 @@ def refresh_segment_lists_for_tenant(tenant_db):
                     file_bytes=csv_bytes,
                 )
 
-                print(f"{tenant_db}: created {list_name} with {len(contacts)} contacts")
+                print(f"{tenant_db}: created {list_name} with {len(contacts)} contacts ({contact_mix(contacts)})")
 
 
 failed_list_refreshes = []
